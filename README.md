@@ -121,14 +121,9 @@ git clone <this-repo-url> openclaw-fork
 cd openclaw-fork
 ```
 
-You'll need a clean `openclaw-src/` upstream checkout next to the patches:
+That's it — `openclaw-src/` is vendored directly in the repo at a known-good upstream commit (`001e0c1f65c4bfdf310a5161cde25696e868af20`) with the Dockerfile build-context hook already applied. A plain clone gives you a buildable tree; skip to step 2.
 
-```sh
-git clone https://github.com/openclaw/openclaw openclaw-src
-git -C openclaw-src checkout 001e0c1f65c4bfdf310a5161cde25696e868af20
-```
-
-> Newer upstream commits are likely to work but may require patch regeneration if upstream rewrote any of the touched files. See `openclaw-patches/CLAUDE.md` for the patch repair workflow.
+> **Maintainer note — rebasing onto a newer upstream.** If you want to re-pin the vendored tree to a newer OpenClaw commit, there's an optional `sh setup.sh` helper: edit the `PINNED_COMMIT` at the top, run it, and it'll remove the existing `openclaw-src/`, re-clone upstream at that commit, and re-apply `openclaw-patches/dockerfile-hook.patch`. You still need to run a full `docker build` to confirm the other patch groups still apply, and regenerate any that fail per `openclaw-patches/CLAUDE.md`.
 
 ### 2. Configure environment
 

@@ -1,0 +1,47 @@
+diff --git a/Dockerfile b/Dockerfile
+index fd9a8c1..250f790 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -29,7 +29,7 @@ ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:e8e2e91b1378f83c5b2dd15f0247f3411
+ FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
+ ARG OPENCLAW_EXTENSIONS
+ ARG OPENCLAW_BUNDLED_PLUGIN_DIR
+-COPY ${OPENCLAW_BUNDLED_PLUGIN_DIR} /tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR}
++COPY openclaw-src/${OPENCLAW_BUNDLED_PLUGIN_DIR} /tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR}
+ # Copy package.json for opted-in extensions so pnpm resolves their deps.
+ RUN mkdir -p /out && \
+     for ext in $OPENCLAW_EXTENSIONS; do \
+@@ -61,10 +61,13 @@ RUN corepack enable
+ 
+ WORKDIR /app
+ 
+-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+-COPY ui/package.json ./ui/package.json
+-COPY patches ./patches
+-COPY scripts/postinstall-bundled-plugins.mjs scripts/npm-runner.mjs ./scripts/
++# NOTE: Build context is the PROJECT ROOT (parent of openclaw-src/), not
++# openclaw-src/ itself. This is so the build can also see openclaw-patches/.
++# Invoke as: docker build -f openclaw-src/Dockerfile <project-root>
++COPY openclaw-src/package.json openclaw-src/pnpm-lock.yaml openclaw-src/pnpm-workspace.yaml openclaw-src/.npmrc ./
++COPY openclaw-src/ui/package.json ./ui/package.json
++COPY openclaw-src/patches ./patches
++COPY openclaw-src/scripts/postinstall-bundled-plugins.mjs openclaw-src/scripts/npm-runner.mjs ./scripts/
+ 
+ COPY --from=ext-deps /out/ ./${OPENCLAW_BUNDLED_PLUGIN_DIR}/
+ 
+@@ -73,7 +76,14 @@ COPY --from=ext-deps /out/ ./${OPENCLAW_BUNDLED_PLUGIN_DIR}/
+ RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
+     NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+ 
+-COPY . .
++COPY openclaw-src/ .
++
++# Apply fork patches from the openclaw-patches/ sibling directory.
++# The applier walks files/*/ in lexical order, applying .patch files via
++# `patch --forward -p0` and invoking .sh files (e.g. the SDK monkey-patch).
++# Idempotent: rerunning is a no-op.
++COPY openclaw-patches /tmp/openclaw-patches
++RUN sh /tmp/openclaw-patches/apply.sh /app && rm -rf /tmp/openclaw-patches
+ 
+ # Normalize extension paths now so runtime COPY preserves safe modes
+ # without adding a second full extensions layer.
