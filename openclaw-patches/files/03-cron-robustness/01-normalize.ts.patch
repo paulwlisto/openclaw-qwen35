@@ -1,0 +1,191 @@
+diff --git src/cron/normalize.ts src/cron/normalize.ts
+index 49d3222..45008e2 100644
+--- src/cron/normalize.ts
++++ src/cron/normalize.ts
+@@ -27,6 +27,47 @@ function hasTrimmedStringValue(value: unknown) {
+   return parseOptionalField(TrimmedNonEmptyStringFieldSchema, value) !== undefined;
+ }
+ 
++/**
++ * Small/mid-size function-calling models (e.g. Qwen3.5 2B) sometimes emit nested
++ * object arguments as JSON-encoded strings instead of real objects — despite the
++ * Qwen template asking for objects. When that happens the downstream schema
++ * validator rejects with `at /payload: must be object` etc.
++ *
++ * Defensively parse any string value that looks like a JSON object/array for the
++ * known nested fields before the rest of normalization runs.
++ */
++const CRON_STRINGIFIED_OBJECT_FIELDS = [
++  "schedule",
++  "payload",
++  "delivery",
++  "patch",
++  "failureAlert",
++] as const;
++
++function parseStringifiedObject(value: unknown): unknown {
++  if (typeof value !== "string") {
++    return value;
++  }
++  const trimmed = value.trim();
++  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) {
++    return value;
++  }
++  try {
++    return JSON.parse(trimmed);
++  } catch {
++    return value;
++  }
++}
++
++function coerceStringifiedObjectFields(record: UnknownRecord): UnknownRecord {
++  for (const key of CRON_STRINGIFIED_OBJECT_FIELDS) {
++    if (key in record) {
++      record[key] = parseStringifiedObject(record[key]);
++    }
++  }
++  return record;
++}
++
+ function hasAgentTurnPayloadHint(payload: UnknownRecord) {
+   return (
+     hasTrimmedStringValue(payload.model) ||
+@@ -300,6 +341,125 @@ function inferTopLevelPayload(next: UnknownRecord) {
+   return null;
+ }
+ 
++/**
++ * Small models (e.g. Qwen3.5 4B) sometimes flatten nested object fields into
++ * underscore-prefixed keys instead of producing real nested JSON.  For example:
++ *
++ *   schedule_kind: "at", at: "2026-04-08T09:00+10:00"
++ *
++ * instead of:
++ *
++ *   schedule: { kind: "at", at: "2026-04-08T09:00+10:00" }
++ *
++ * Reconstruct the nested objects from any recognised prefix patterns so the
++ * downstream schema validator sees the correct structure.
++ */
++const PREFIXED_FIELD_GROUPS: Record<string, { target: string; field: string }> = {
++  schedule_kind: { target: "schedule", field: "kind" },
++  schedule_at: { target: "schedule", field: "at" },
++  schedule_expr: { target: "schedule", field: "expr" },
++  schedule_tz: { target: "schedule", field: "tz" },
++  schedule_everyMs: { target: "schedule", field: "everyMs" },
++  schedule_every: { target: "schedule", field: "every" },
++  payload_kind: { target: "payload", field: "kind" },
++  payload_text: { target: "payload", field: "text" },
++  payload_message: { target: "payload", field: "message" },
++  payload_model: { target: "payload", field: "model" },
++  payload_thinking: { target: "payload", field: "thinking" },
++  payload_timeoutSeconds: { target: "payload", field: "timeoutSeconds" },
++  delivery_mode: { target: "delivery", field: "mode" },
++  delivery_channel: { target: "delivery", field: "channel" },
++  delivery_to: { target: "delivery", field: "to" },
++};
++
++
++/**
++ * Small models (e.g. Qwen3.5 4B) sometimes use mangled key terminators as a
++ * shorthand notation for nested object boundaries. The model emits keys like:
++ *
++ *   "schedule\": {": { kind: "at", at: "..." }      ← backslash variant
++ *   "schedule': {":  { kind: "at", at: "..." }      ← single-quote variant
++ *   "sessionTarget\": ":  "main"                    ← string-value variant
++ *
++ * The brace count is balanced (the literal "junk" chars are part of the key
++ * string, not structural), and the value is the actual nested data the model
++ * intended. Stripping these notations at the byte level confuses the model
++ * into closing parent objects early on subsequent generations.
++ *
++ * Instead, treat the mangling as semantic notation: extract the leading
++ * word-character prefix as the real field name and rebind the value.
++ *
++ * Detection rule: any key that starts with `[A-Za-z_][A-Za-z0-9_]*` and is
++ * immediately followed by a non-word character is a mangled key. Clean keys
++ * are entirely word-characters and so won't match (the regex requires a
++ * non-word follow-up).
++ */
++function repairMangledKeys(record: UnknownRecord): UnknownRecord {
++  const renames: Array<{ from: string; to: string }> = [];
++  for (const key of Object.keys(record)) {
++    const match = key.match(/^([A-Za-z_][A-Za-z0-9_]*)[^A-Za-z0-9_]/);
++    if (match) {
++      const realName = match[1];
++      if (realName !== key) {
++        renames.push({ from: key, to: realName });
++      }
++    }
++  }
++  for (const { from, to } of renames) {
++    const val = record[from];
++    delete record[from];
++    if (record[to] === undefined) {
++      record[to] = val;
++    } else if (isRecord(val) && isRecord(record[to])) {
++      // Merge nested objects (clean key wins on key collisions)
++      record[to] = { ...(val as UnknownRecord), ...(record[to] as UnknownRecord) };
++    } else {
++      // Don't clobber an existing clean value with a mangled-key value
++    }
++  }
++  // Recurse into nested objects so deeper mangling is also repaired
++  for (const key of Object.keys(record)) {
++    const v = record[key];
++    if (isRecord(v)) {
++      repairMangledKeys(v as UnknownRecord);
++    }
++  }
++  return record;
++}
++
++function reconstructPrefixedFields(record: UnknownRecord): UnknownRecord {
++  let changed = false;
++  for (const [prefixedKey, mapping] of Object.entries(PREFIXED_FIELD_GROUPS)) {
++    if (prefixedKey in record && record[prefixedKey] !== undefined) {
++      const existing = isRecord(record[mapping.target]) ? record[mapping.target] : {};
++      (existing as UnknownRecord)[mapping.field] = record[prefixedKey];
++      record[mapping.target] = existing;
++      delete record[prefixedKey];
++      changed = true;
++    }
++  }
++  // Also handle sessionTarget_main → sessionTarget: "main" pattern
++  for (const key of Object.keys(record)) {
++    if (key.startsWith("sessionTarget_") && typeof record[key] === "string") {
++      record.sessionTarget = record[key];
++      delete record[key];
++      changed = true;
++    }
++  }
++  // Handle bare "at" field without schedule → schedule.at
++  if ("at" in record && typeof record.at === "string" && !isRecord(record.schedule)) {
++    const existing = isRecord(record.schedule) ? record.schedule : {};
++    (existing as UnknownRecord).at = record.at;
++    if (!("kind" in (existing as UnknownRecord))) {
++      (existing as UnknownRecord).kind = "at";
++    }
++    record.schedule = existing;
++    delete record.at;
++    changed = true;
++  }
++  return record;
++}
++
+ function unwrapJob(raw: UnknownRecord) {
+   if (isRecord(raw.data)) {
+     return raw.data;
+@@ -405,7 +565,11 @@ export function normalizeCronJobInput(
+   if (!isRecord(raw)) {
+     return null;
+   }
+-  const base = unwrapJob(raw);
++  const coercedRaw = coerceStringifiedObjectFields({ ...raw });
++  const base = unwrapJob(coercedRaw);
++  coerceStringifiedObjectFields(base);
++  repairMangledKeys(base);
++  reconstructPrefixedFields(base);
+   const next: UnknownRecord = { ...base };
+ 
+   if ("agentId" in base) {

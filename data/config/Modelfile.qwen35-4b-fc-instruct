@@ -1,0 +1,85 @@
+FROM qwen3.5:4b-q4_K_M
+
+# --- Chat template (Non-Thinking / Instruct version) ---
+# Thinking is disabled by immediately closing the <think> tag,
+# causing the model to skip chain-of-thought and respond directly.
+TEMPLATE """
+{{- $lastUserIdx := -1 -}}
+{{- range $idx, $msg := .Messages -}}
+{{- if eq $msg.Role "user" }}{{ $lastUserIdx = $idx }}{{ end -}}
+{{- end }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .Tools }}
+
+# Tools
+
+You have access to the following functions:
+
+<tools>
+{{- range .Tools }}
+{{ . | json }}
+{{- end }}
+</tools>
+
+If you choose to call a function ONLY reply in the following format with NO suffix:
+
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+
+<IMPORTANT>
+Reminder:
+- Required parameters MUST be specified
+- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
+- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
+</IMPORTANT>
+{{- end -}}
+{{ if .System }}
+{{ .System }}
+{{- end -}}
+<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" -}}
+<|im_start|>{{ .Role }}
+{{ .Content -}}
+<|im_end|>
+{{ end }}
+{{- if eq .Role "assistant" -}}
+<|im_start|>{{ .Role }}
+{{- if (and $.IsThinkSet (and .Thinking (or $last (gt $i $lastUserIdx)))) -}}
+<think>{{ .Thinking }}</think>
+{{ end }}
+{{ if .Content }}{{ .Content }}{{ end }}
+{{- if .ToolCalls }}
+{{- range .ToolCalls }}
+<tool_call>
+{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+</tool_call>
+{{- end }}
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+<think>
+</think>
+{{ end }}
+{{- end }}
+"""
+
+# --- Recommended parameters (based on official Qwen3.5 settings) ---
+PARAMETER temperature       0.9
+PARAMETER top_p             0.85
+PARAMETER top_k             20
+PARAMETER repeat_penalty    1.5
+PARAMETER num_ctx           32768
+PARAMETER stop              "<|im_end|>"
+PARAMETER stop              "<|endoftext|>"
+
+# --- System prompt (appended under OpenClaw's injected prompt) ---
+SYSTEM """You are Qwen, a helpful assistant created by Alibaba Cloud. You are helpful, harmless, and honest. /no_think"""

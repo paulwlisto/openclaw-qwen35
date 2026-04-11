@@ -1,0 +1,13 @@
+diff --git src/config/zod-schema.core.ts src/config/zod-schema.core.ts
+index f849ff3..477a71c 100644
+--- src/config/zod-schema.core.ts
++++ src/config/zod-schema.core.ts
+@@ -188,6 +188,8 @@ export const ModelCompatSchema = z
+     supportsReasoningEffort: z.boolean().optional(),
+     supportsUsageInStreaming: z.boolean().optional(),
+     supportsTools: z.boolean().optional(),
++    routeToolsAsBuiltIn: z.boolean().optional(),
++    thinkingLevel: z.enum(["off", "low", "medium", "high"]).optional(),
+     supportsStrictMode: z.boolean().optional(),
+     maxTokensField: z
+       .union([z.literal("max_completion_tokens"), z.literal("max_tokens")])

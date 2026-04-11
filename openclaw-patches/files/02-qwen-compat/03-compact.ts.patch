@@ -1,0 +1,38 @@
+diff --git src/agents/pi-embedded-runner/compact.ts src/agents/pi-embedded-runner/compact.ts
+index a1a1766..0a72a17 100644
+--- src/agents/pi-embedded-runner/compact.ts
++++ src/agents/pi-embedded-runner/compact.ts
+@@ -722,9 +722,11 @@ export async function compactEmbeddedPiSessionDirect(
+         await resourceLoader.reload();
+       }
+ 
++      const compactModelCompat = model.compat as { routeToolsAsBuiltIn?: boolean } | undefined;
+       const { builtInTools, customTools } = splitSdkTools({
+         tools: effectiveTools,
+         sandboxEnabled: !!sandbox?.enabled,
++        routeToolsAsBuiltIn: compactModelCompat?.routeToolsAsBuiltIn === true,
+       });
+ 
+       const { session } = await createAgentSession({
+@@ -740,7 +742,20 @@ export async function compactEmbeddedPiSessionDirect(
+         settingsManager,
+         resourceLoader,
+       });
+-      applySystemPromptOverrideToSession(session, systemPromptOverride());
++      // Qwen3: control thinking depth via prompt based on thinkingLevel
++      let compactSystemPrompt = systemPromptOverride();
++      const qwenCompat = model.compat as Record<string, unknown> | undefined;
++      if (qwenCompat?.thinkingFormat === "qwen") {
++        const effectiveThink = (qwenCompat?.thinkingLevel as string) || params.thinkLevel;
++        if (effectiveThink === "off") {
++          compactSystemPrompt = `/no_think\n\n${compactSystemPrompt}`;
++        } else if (effectiveThink === "low") {
++          compactSystemPrompt = `Limit thinking to 3 paragraphs.\n\n${compactSystemPrompt}`;
++        } else if (effectiveThink === "medium") {
++          compactSystemPrompt = `Limit thinking to 5 paragraphs.\n\n${compactSystemPrompt}`;
++        }
++      }
++      applySystemPromptOverrideToSession(session, compactSystemPrompt);
+       const providerStreamFn = registerProviderStreamForModel({
+         model,
+         cfg: params.config,

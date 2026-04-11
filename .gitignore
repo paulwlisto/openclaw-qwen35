@@ -1,0 +1,10 @@
+# Claude Code workspace state
+.claude
+
+# Secrets — never commit
+.env
+
+# Runtime data — large, machine-local, not source
+/data/workspace/*
+/data/models/*
+data/config/credentials/

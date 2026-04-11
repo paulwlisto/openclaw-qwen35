@@ -1,0 +1,91 @@
+# Project-root .dockerignore for openclaw-patched build.
+# Build context is the project root so the
+# Dockerfile can see both openclaw-src/ and openclaw-patches/. Everything that
+# isn't needed for the build must be excluded here to keep the context small.
+
+# Project-root one-offs
+__pycache__
+*.pyc
+.git
+.env
+.env.*
+
+# Runtime data — never goes into the image
+data/
+
+# Sibling top-level directories that aren't part of the openclaw build
+llama-inference/
+.build/
+
+# Plans, scripts, docs at project root
+*.md
+!openclaw-patches/**/*.md
+
+# ── openclaw-src exclusions (mirrors openclaw-src/.dockerignore) ──────
+openclaw-src/.git
+openclaw-src/.worktrees
+openclaw-src/.bun-cache
+openclaw-src/.bun
+openclaw-src/.tmp
+openclaw-src/**/.tmp
+openclaw-src/.DS_Store
+openclaw-src/**/.DS_Store
+openclaw-src/node_modules
+openclaw-src/**/node_modules
+openclaw-src/.pnpm-store
+openclaw-src/**/.pnpm-store
+openclaw-src/.turbo
+openclaw-src/**/.turbo
+openclaw-src/.cache
+openclaw-src/**/.cache
+openclaw-src/.next
+openclaw-src/**/.next
+openclaw-src/coverage
+openclaw-src/**/coverage
+openclaw-src/docs/.generated
+openclaw-src/**/.generated
+openclaw-src/*.log
+openclaw-src/tmp
+openclaw-src/**/tmp
+
+# build artifacts
+openclaw-src/dist
+openclaw-src/**/dist
+openclaw-src/apps/macos/.build
+openclaw-src/apps/ios/build
+openclaw-src/**/*.trace
+
+# large app trees not needed for CLI build
+openclaw-src/apps/
+openclaw-src/assets/
+openclaw-src/Peekaboo/
+openclaw-src/Swabble/
+openclaw-src/Core/
+openclaw-src/Users/
+openclaw-src/vendor/
+
+# Re-include only what Canvas A2UI bundle build needs.
+!openclaw-src/apps/shared/
+!openclaw-src/apps/shared/OpenClawKit/
+!openclaw-src/apps/shared/OpenClawKit/Sources/
+!openclaw-src/apps/shared/OpenClawKit/Sources/OpenClawKit/
+!openclaw-src/apps/shared/OpenClawKit/Sources/OpenClawKit/Resources/
+!openclaw-src/apps/shared/OpenClawKit/Sources/OpenClawKit/Resources/tool-display.json
+!openclaw-src/apps/shared/OpenClawKit/Tools/
+!openclaw-src/apps/shared/OpenClawKit/Tools/CanvasA2UI/
+!openclaw-src/apps/shared/OpenClawKit/Tools/CanvasA2UI/**
+!openclaw-src/vendor/a2ui/
+!openclaw-src/vendor/a2ui/renderers/
+!openclaw-src/vendor/a2ui/renderers/lit/
+!openclaw-src/vendor/a2ui/renderers/lit/**
+
+# media files anywhere
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.webp
+**/*.gif
+**/*.mp4
+**/*.mov
+**/*.wav
+**/*.mp3

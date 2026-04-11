@@ -1,0 +1,78 @@
+diff --git src/agents/pi-embedded-runner/run/attempt.ts src/agents/pi-embedded-runner/run/attempt.ts
+index ace56ab..6d07b51 100644
+--- src/agents/pi-embedded-runner/run/attempt.ts
++++ src/agents/pi-embedded-runner/run/attempt.ts
+@@ -332,6 +332,10 @@ export async function runEmbeddedAttempt(
+   log.debug(
+     `embedded run start: runId=${params.runId} sessionId=${params.sessionId} provider=${params.provider} model=${params.modelId} thinking=${params.thinkLevel} messageChannel=${params.messageChannel ?? params.messageProvider ?? "unknown"}`,
+   );
++  const _compatThink = (params.model.compat as Record<string, unknown> | undefined)?.thinkingLevel;
++  if (_compatThink) {
++    console.error(`[thinking-debug] compat.thinkingLevel=${_compatThink} params.thinkLevel=${params.thinkLevel}`);
++  }
+ 
+   await fs.mkdir(resolvedWorkspace, { recursive: true });
+ 
+@@ -737,6 +741,19 @@ export async function runEmbeddedAttempt(
+     const systemPromptOverride = createSystemPromptOverride(appendPrompt);
+     let systemPromptText = systemPromptOverride();
+ 
++    // Qwen3: control thinking depth via prompt based on thinkingLevel
++    const qwenCompat = params.model.compat as Record<string, unknown> | undefined;
++    if (qwenCompat?.thinkingFormat === "qwen") {
++      const effectiveThink = (qwenCompat?.thinkingLevel as string) || params.thinkLevel;
++      if (effectiveThink === "off") {
++        systemPromptText = `/no_think\n\n${systemPromptText}`;
++      } else if (effectiveThink === "low") {
++        systemPromptText = `Limit thinking to 3 paragraphs.\n\n${systemPromptText}`;
++      } else if (effectiveThink === "medium") {
++        systemPromptText = `Limit thinking to 5 paragraphs.\n\n${systemPromptText}`;
++      }
++    }
++
+     const sessionLock = await acquireSessionWriteLock({
+       sessionFile: params.sessionFile,
+       maxHoldMs: resolveSessionLockMaxHoldFromTimeout({
+@@ -848,9 +865,12 @@ export async function runEmbeddedAttempt(
+       // Get hook runner early so it's available when creating tools
+       const hookRunner = getGlobalHookRunner();
+ 
++      // Check if model requests tools routed as built-in (for local models like Ollama)
++      const modelCompat = params.model.compat as { routeToolsAsBuiltIn?: boolean } | undefined;
+       const { builtInTools, customTools } = splitSdkTools({
+         tools: effectiveTools,
+         sandboxEnabled: !!sandbox?.enabled,
++        routeToolsAsBuiltIn: modelCompat?.routeToolsAsBuiltIn === true,
+       });
+ 
+       // Add client tools (OpenResponses hosted tools) to customTools
+@@ -883,7 +903,10 @@ export async function runEmbeddedAttempt(
+         authStorage: params.authStorage,
+         modelRegistry: params.modelRegistry,
+         model: params.model,
+-        thinkingLevel: mapThinkingLevel(params.thinkLevel),
++        thinkingLevel: mapThinkingLevel(
++          ((modelCompat as Record<string, unknown> | undefined)?.thinkingLevel as typeof params.thinkLevel)
++            || params.thinkLevel
++        ),
+         tools: builtInTools,
+         customTools: allCustomTools,
+         sessionManager,
+@@ -1320,6 +1343,17 @@ export async function runEmbeddedAttempt(
+         onPartialReply: params.onPartialReply,
+         onAssistantMessageStart: params.onAssistantMessageStart,
+         onAgentEvent: params.onAgentEvent,
++        onToolLoopDetected: (info) => {
++          log.warn(
++            `embedded run tool-call loop detected; aborting: runId=${params.runId} tool=${info.toolName} count=${info.count} threshold=${info.threshold}`,
++          );
++          abortRun(
++            false,
++            new Error(
++              `Tool call loop detected: ${info.toolName} called ${info.count} times with identical arguments`,
++            ),
++          );
++        },
+         enforceFinalTag: params.enforceFinalTag,
+         silentExpected: params.silentExpected,
+         config: params.config,

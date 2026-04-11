@@ -1,0 +1,275 @@
+# ════════════════════════════════════════════════════════════════════
+#  OpenClaw stack — Ollama vs llama.cpp-server backend toggle
+# ════════════════════════════════════════════════════════════════════
+#
+#  Two inference backends live side-by-side under compose profiles.
+#  Exactly one should be running at a time. Both claim the same
+#  container_name and the same "inference" network alias, so the
+#  gateway sees a stable hostname regardless of which backend is up.
+#
+#  ── Building the gateway image ─────────────────────────────────────
+#
+#  The openclaw-gateway service uses the openclaw-patched:latest image,
+#  built from openclaw-src/ with our fork patches re-applied at build
+#  time by openclaw-patches/apply.sh. The build context is the PROJECT
+#  ROOT (this directory), not openclaw-src/, so the Dockerfile can see
+#  both the source tree and the patches directory.
+#
+#    docker build -f openclaw-src/Dockerfile -t openclaw-patched:latest .
+#
+#  See openclaw-patches/README.md for the upgrade workflow.
+#
+#  ── Switching inference backends ───────────────────────────────────
+#
+#    # Ollama (legacy, has qwen3next stall + broken penalty sampling)
+#    docker compose --profile ollama up -d
+#
+#    # llama.cpp-server (native penalty sampling, proper Jinja templates)
+#    docker compose --profile ollama down
+#    docker compose --profile llamacpp up -d
+#
+#  After switching you also need to toggle the matching provider block
+#  in data/config/openclaw.json (JSON5 comments — uncomment one, comment
+#  the other) and then docker cp the new config into the gateway +
+#  restart it:
+#
+#    docker cp data/config/openclaw.json openclaw-gateway:/home/node/.openclaw/openclaw.json
+#    docker compose restart openclaw-gateway
+#
+# ════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Inference backend #1: Ollama ─────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    container_name: openclaw-inference
+    networks:
+      default:
+        aliases:
+          - inference
+    environment:
+      - OLLAMA_NUM_GPU=999
+      - OLLAMA_DEBUG=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
+      - OLLAMA_KV_CACHE_TYPE=${OLLAMA_KV_CACHE_TYPE:-f16}
+      - OLLAMA_NUM_CTX=32768
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          memory: 9g
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  # ── Inference backend #2: llama.cpp-server ───────────────────────
+  llamacpp:
+    # Thin layer on upstream server-cuda adding tzdata so TZ env var works.
+    build: ./llama-inference
+    image: openclaw-llamacpp:latest
+    profiles: ["llamacpp"]
+    container_name: openclaw-inference
+    networks:
+      default:
+        aliases:
+          - inference
+    environment:
+      TZ: ${OPENCLAW_TZ:-UTC}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/models:/models:ro
+      - ./data/config/qwen3.5-2b-chat-template.jinja:/config/qwen3.5-2b-chat-template.jinja:ro
+    command:
+      # Model file — bartowski's 4B Q4_K_M GGUF built against upstream llama.cpp.
+      # SHA256 verified against HuggingFace LFS pointer at download time via
+      # data/models/verify-and-download.sh. The 4B capacity gives reliable nested
+      # JSON tool args (the 2B cliff-jumped on cron.add), and Q4_K_M keeps the
+      # weights around ~2.7 GB so there's VRAM headroom for KV cache + context.
+      - "-m"
+      - "/models/Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+      # Network binding — match Ollama's port so openclaw.json baseUrl stays the same
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "11434"
+      # GPU offload — all layers, llama.cpp auto-fits like Ollama does
+      - "-ngl"
+      - "999"
+      # Auto-fit context to available VRAM with 64 MiB margin.
+      # Floor of 24k ensures system prompt + tool schemas always fit.
+      - "--fit"
+      - "on"
+      - "--fit-target"
+      - "64"
+      - "--fit-ctx"
+      - "28672"
+      # Single slot — only 1 user, maximises per-slot context on 4GB VRAM
+      - "-np"
+      - "1"
+      # Reduced ubatch to lower peak VRAM during prompt eval.
+      # Default ubatch=512 reserves large scratch buffers; 128 cuts that ~4x.
+      - "-b"
+      - "512"
+      - "-ub"
+      - "128"
+      # Context shifting — gracefully discard oldest tokens instead of OOM
+      - "--context-shift"
+      - "--keep"
+      - "256"
+      # Flash attention — required when KV cache is quantized below f16.
+      - "-fa"
+      - "on"
+      # KV cache quantization — q4_0 for both K and V. Smallest available
+      # KV quant, keeps VRAM usage minimal. Requires flash attention (above).
+      - "-ctk"
+      - "q4_0"
+      - "-ctv"
+      - "q4_0"
+      # Upstream Qwen Jinja chat template (not the Go template Ollama uses)
+      - "--jinja"
+      - "--chat-template-file"
+      - "/config/qwen3.5-2b-chat-template.jinja"
+      # Sampling defaults — these ACTUALLY APPLY in llama.cpp (unlike Ollama's Go runner)
+      # Based on Qwen/Unsloth guidance for Qwen3.5:2b non-thinking mode
+      - "--temp"
+      - "0.7"
+      - "--top-p"
+      - "0.8"
+      - "--top-k"
+      - "20"
+      # presence-penalty=0 for tool-calling: values >0 penalize every repeated
+      # token in output, which for JSON means `"`, `:`, `{`, `,`, `}` get hit
+      # on every reuse — fine for prose, catastrophic for structured tool args.
+      # Qwen's own guidance is 0.0 for non-thinking mode.
+      - "--presence-penalty"
+      - "0.0"
+      - "--repeat-penalty"
+      - "1.0"
+      # Disable mmap and lock model weights in RAM — prevents page faults
+      # during inference, important for iquant formats like IQ4_XS.
+      - "--no-mmap"
+      - "--mlock"
+      # Keep the prompt cache on disk so recurrent-state reconstruction survives restarts
+      - "--cache-prompt"
+      # Verbose logging so we can see the sampler chain and active template on startup
+      - "--verbose"
+    deploy:
+      resources:
+        reservations:
+          memory: 9g
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      # llama.cpp-server exposes GET /health returning {"status":"ok"} when ready
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:11434/health | grep -q 'ok' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ── Pull Qwen model on first run (Ollama profile only) ───────────
+  ollama-pull:
+    image: curlimages/curl:latest
+    profiles: ["ollama"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "curl -sf http://inference:11434/api/tags | grep -q qwen3 ||
+             curl -sf http://inference:11434/api/pull -d '{\"name\": \"qwen3:14b\", \"stream\": false}'"
+    restart: "no"
+
+  # ── Seed config into named volume on first run (both profiles) ───
+  openclaw-init:
+    image: openclaw-patched:latest
+    profiles: ["ollama", "llamacpp"]
+    volumes:
+      - openclaw_config:/data
+      - ./data/config/openclaw.json:/seed/openclaw.json:ro
+    entrypoint: >
+      sh -c "if [ ! -f /data/openclaw.json ]; then
+               cp /seed/openclaw.json /data/openclaw.json;
+             fi && chown -R node:node /data"
+    user: root
+    restart: "no"
+
+  # ── OpenClaw Gateway (runs under both profiles) ──────────────────
+  openclaw-gateway:
+    image: openclaw-patched:latest
+    profiles: ["ollama", "llamacpp"]
+    container_name: openclaw-gateway
+    mem_limit: 1g
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OLLAMA_API_KEY: ollama-local
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      OPENCLAW_LOG_LEVEL: debug
+      OLLAMA_STREAM: ${OLLAMA_STREAM:-true}
+      TZ: ${OPENCLAW_TZ:-UTC}
+    volumes:
+      - openclaw_config:/home/node/.openclaw
+      - ./data/workspace:/home/node/.openclaw/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    init: true
+    restart: unless-stopped
+    depends_on:
+      # No hard dependency on a specific inference backend — either
+      # ollama or llamacpp resolves the "inference" hostname depending
+      # on which profile is up. Gateway handles inference-unavailable
+      # via retry on its first request.
+      openclaw-init:
+        condition: service_completed_successfully
+    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789", "--allow-unconfigured"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── OpenClaw CLI (for interactive commands) ──────────────────────
+  openclaw-cli:
+    image: openclaw-patched:latest
+    container_name: openclaw-cli
+    network_mode: "service:openclaw-gateway"
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - openclaw_config:/home/node/.openclaw
+      - ./data/workspace:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
+    profiles:
+      - cli  # only starts with: docker compose --profile cli run openclaw-cli
+
+volumes:
+  ollama_data:
+  openclaw_config:

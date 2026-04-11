@@ -1,0 +1,13 @@
+diff --git src/agents/pi-embedded-subscribe.ts src/agents/pi-embedded-subscribe.ts
+index 7f1fdb4..2d8e518 100644
+--- src/agents/pi-embedded-subscribe.ts
++++ src/agents/pi-embedded-subscribe.ts
+@@ -44,6 +44,8 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
+     assistantTexts: [],
+     toolMetas: [],
+     toolMetaById: new Map(),
++    toolCallCounts: new Map(),
++    toolLoopReportedKeys: new Set(),
+     toolSummaryById: new Set(),
+     lastToolError: undefined,
+     blockReplyBreak: params.blockReplyBreak ?? "text_end",

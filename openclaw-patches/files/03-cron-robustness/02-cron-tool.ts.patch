@@ -1,0 +1,37 @@
+diff --git src/agents/tools/cron-tool.ts src/agents/tools/cron-tool.ts
+index 36b4f8e..f2ccf5e 100644
+--- src/agents/tools/cron-tool.ts
++++ src/agents/tools/cron-tool.ts
+@@ -557,6 +557,32 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
+             }
+           }
+ 
++          // Partial-job recovery: small models (e.g. Qwen3.5 4B) sometimes
++          // populate `params.job` with only some required fields and emit
++          // the rest as siblings of `job` at the top level — typically
++          // because they closed the `job` object early when nested key
++          // notation confused brace tracking. Absorb any recoverable
++          // top-level fields into `params.job` so the schema validator
++          // sees the complete shape. Top-level fields fill gaps only;
++          // they never override values already inside `params.job`.
++          if (
++            params.job &&
++            typeof params.job === "object" &&
++            !Array.isArray(params.job)
++          ) {
++            const jobObj = params.job as Record<string, unknown>;
++            for (const key of Object.keys(params)) {
++              if (key === "job" || key === "action") continue;
++              if (
++                CRON_RECOVERABLE_OBJECT_KEYS.has(key) &&
++                params[key] !== undefined &&
++                jobObj[key] === undefined
++              ) {
++                jobObj[key] = params[key];
++              }
++            }
++          }
++
+           if (!params.job || typeof params.job !== "object") {
+             throw new Error("job required");
+           }

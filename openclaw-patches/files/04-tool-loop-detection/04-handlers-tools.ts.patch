@@ -1,0 +1,56 @@
+diff --git src/agents/pi-embedded-subscribe.handlers.tools.ts src/agents/pi-embedded-subscribe.handlers.tools.ts
+index 693c694..9340a61 100644
+--- src/agents/pi-embedded-subscribe.handlers.tools.ts
++++ src/agents/pi-embedded-subscribe.handlers.tools.ts
+@@ -384,6 +384,51 @@ export function handleToolExecutionStart(
+       `embedded run tool start: runId=${ctx.params.runId} tool=${toolName} toolCallId=${toolCallId}`,
+     );
+ 
++    // --- Circuit breaker: detect repeated identical tool calls within a run. ---
++    // Small/mid-size models (especially Qwen3.5 family) are prone to emitting the
++    // same tool call hundreds of times in a turn. Count identical (name+args)
++    // calls and fire `onToolLoopDetected` once the threshold is exceeded so the
++    // surrounding runner can abort the session instead of burning compute silently.
++    const TOOL_LOOP_THRESHOLD = 10;
++    let argKey: string;
++    try {
++      argKey = `${toolName}:${JSON.stringify(args ?? null)}`;
++    } catch {
++      // Fallback for circular/non-serialisable args: key on toolName + a stable
++      // stringification of the top-level keys.
++      const keys =
++        args && typeof args === "object"
++          ? Object.keys(args as Record<string, unknown>).sort().join(",")
++          : String(args);
++      argKey = `${toolName}:[non-json:${keys}]`;
++    }
++    const nextCount = (ctx.state.toolCallCounts.get(argKey) ?? 0) + 1;
++    ctx.state.toolCallCounts.set(argKey, nextCount);
++    if (
++      nextCount >= TOOL_LOOP_THRESHOLD &&
++      !ctx.state.toolLoopReportedKeys.has(argKey)
++    ) {
++      ctx.state.toolLoopReportedKeys.add(argKey);
++      ctx.log.warn(
++        `tool-call loop detected: runId=${ctx.params.runId} tool=${toolName} count=${nextCount} threshold=${TOOL_LOOP_THRESHOLD} toolCallId=${toolCallId}`,
++      );
++      if (ctx.params.onToolLoopDetected) {
++        try {
++          ctx.params.onToolLoopDetected({
++            toolName,
++            toolCallId,
++            count: nextCount,
++            threshold: TOOL_LOOP_THRESHOLD,
++            argKey,
++          });
++        } catch (err) {
++          ctx.log.warn(
++            `tool-call loop handler threw: runId=${ctx.params.runId} err=${String(err)}`,
++          );
++        }
++      }
++    }
++
+     const shouldEmitToolEvents = ctx.shouldEmitToolResult();
+     emitAgentEvent({
+       runId: ctx.params.runId,

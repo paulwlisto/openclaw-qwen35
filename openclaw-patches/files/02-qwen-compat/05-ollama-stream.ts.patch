@@ -1,0 +1,65 @@
+diff --git extensions/ollama/src/stream.ts extensions/ollama/src/stream.ts
+index a617e1e..7fdcef6 100644
+--- extensions/ollama/src/stream.ts
++++ extensions/ollama/src/stream.ts
+@@ -158,6 +158,18 @@ function createOllamaThinkingOffWrapper(baseFn: StreamFn | undefined): StreamFn
+   };
+ }
+ 
++function createOllamaThinkingOnWrapper(baseFn: StreamFn | undefined): StreamFn {
++  const streamFn = baseFn ?? streamSimple;
++  return (model, context, options) => {
++    if (model.api !== "ollama") {
++      return streamFn(model, context, options);
++    }
++    return streamWithPayloadPatch(streamFn, model, context, options, (payloadRecord) => {
++      payloadRecord.think = true;
++    });
++  };
++}
++
+ function resolveOllamaCompatNumCtx(model: ProviderRuntimeModel): number {
+   return Math.max(1, Math.floor(model.contextWindow ?? model.maxTokens ?? DEFAULT_CONTEXT_TOKENS));
+ }
+@@ -196,6 +208,9 @@ export function createConfiguredOllamaCompatStreamWrapper(
+ 
+   if (ctx.thinkingLevel === "off") {
+     streamFn = createOllamaThinkingOffWrapper(streamFn);
++  } else if (ctx.thinkingLevel && ctx.thinkingLevel !== "off") {
++    // Enable thinking for Ollama models that support it (e.g. Qwen 3)
++    streamFn = createOllamaThinkingOnWrapper(streamFn);
+   }
+ 
+   if (normalizeProviderId(ctx.provider) === "ollama" && isOllamaCloudKimiModelRef(ctx.modelId)) {
+@@ -510,7 +525,13 @@ export function buildAssistantMessage(
+   modelInfo: StreamModelDescriptor,
+ ): AssistantMessage {
+   const content: (TextContent | ToolCall)[] = [];
+-  const text = response.message.content || "";
++  // Strip leaked thinking content from Qwen models.
++  // Handles: <think>...</think>, or content before a closing </think> when opening tag is missing.
++  const rawText = response.message.content || "";
++  const text = rawText
++    .replace(/<think>[\s\S]*?<\/think>/g, "")
++    .replace(/^[\s\S]*?<\/think>/g, "")
++    .trim();
+   if (text) {
+     content.push({ type: "text", text });
+   }
+@@ -606,6 +627,7 @@ export function createOllamaStreamFn(
+           context.systemPrompt,
+         );
+         const ollamaTools = extractOllamaTools(context.tools);
++        console.error(`[ollama-debug] context.tools=${context.tools?.length ?? "null"} ollamaTools=${ollamaTools.length}`);
+ 
+         const ollamaOptions: Record<string, unknown> = { num_ctx: model.contextWindow ?? 65536 };
+         if (typeof options?.temperature === "number") {
+@@ -618,7 +640,7 @@ export function createOllamaStreamFn(
+         const body = buildOllamaChatRequest({
+           modelId: model.id,
+           messages: ollamaMessages,
+-          stream: true,
++          stream: process.env.OLLAMA_STREAM === "false" ? false : true,
+           tools: ollamaTools,
+           options: ollamaOptions,
+         });

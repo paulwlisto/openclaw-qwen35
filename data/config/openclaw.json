@@ -1,0 +1,146 @@
+// ════════════════════════════════════════════════════════════════════
+//  OpenClaw config — Ollama vs llama.cpp-server backend toggle
+// ════════════════════════════════════════════════════════════════════
+//
+//  This file is parsed as JSON5, so // line comments and /* block */
+//  comments are supported. Only ONE provider block below should be
+//  active at a time — comment out the one you're not using and make
+//  sure `agents.defaults.model.primary` matches the active one.
+//
+//  After toggling:
+//    docker cp data/config/openclaw.json openclaw-gateway:/home/node/.openclaw/openclaw.json
+//    docker exec -u root openclaw-gateway chown node:node /home/node/.openclaw/openclaw.json
+//    docker compose restart openclaw-gateway
+//
+// ════════════════════════════════════════════════════════════════════
+{
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "controlUi": {
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "dmPolicy": "pairing",
+      "groups": {
+        "*": { "requireMention": true }
+      }
+    }
+  },
+
+  "models": {
+    "providers": {
+
+      // ──────────────────────────────────────────────────────────────
+      //  BACKEND OPTION 1: Ollama  (currently COMMENTED OUT)
+      //  Known issues: Go runner silently drops penalty sampling,
+      //  qwen3next hybrid attention stalls on turn transitions.
+      // ──────────────────────────────────────────────────────────────
+      /*
+      "ollama": {
+        "baseUrl": "http://inference:11434",
+        "api": "ollama",
+        "apiKey": "ollama-local",
+        "models": [
+          {
+            "id": "qwen3.5:2b-fc-instruct",
+            "name": "Qwen 3.5 2B FC Instruct (q4_K_M, Ollama)",
+            "reasoning": true,
+            "contextWindow": 31744,
+            "maxTokens": 3072,
+            "compat": {
+              "supportsTools": true,
+              "routeToolsAsBuiltIn": true,
+              "thinkingLevel": "off",
+              "thinkingFormat": "qwen"
+            }
+          }
+        ]
+      },
+      */
+
+      // ──────────────────────────────────────────────────────────────
+      //  BACKEND OPTION 2: llama.cpp-server  (currently ACTIVE)
+      //  Uses upstream Qwen Jinja template, native penalty sampling,
+      //  OpenAI-compatible /v1 endpoint.
+      // ──────────────────────────────────────────────────────────────
+      "llamacpp": {
+        "baseUrl": "http://inference:11434/v1",
+        "api": "openai-completions",
+        "apiKey": "dummy",
+        "models": [
+          {
+            "id": "qwen3.5-4b-q4_k_m",
+            "name": "Qwen 3.5 4B (Q4_K_M, llama.cpp)",
+            "reasoning": true,
+            "contextWindow": 31744,
+            "maxTokens": 3072,
+            "compat": {
+              "supportsTools": true,
+              "routeToolsAsBuiltIn": true,
+              "thinkingLevel": "off",
+              "thinkingFormat": "qwen-chat-template"
+            }
+          }
+        ]
+      }
+
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      // Match the active provider key and model id above.
+      //   Ollama path:    "ollama/qwen3.5:2b-fc-instruct"
+      //   llama.cpp path: "llamacpp/qwen3.5-2b-q6_k"
+      "model": {
+        "primary": "llamacpp/qwen3.5-4b-q4_k_m",
+        "fallbacks": []
+      },
+      "models": {
+        "llamacpp/qwen3.5-4b-q4_k_m": {
+          "streaming": false
+        }
+        // "ollama/qwen3.5:2b-fc-instruct": { "streaming": false }
+      },
+      "llm": {
+        "idleTimeoutSeconds": 600
+      },
+      "thinkingDefault": "low",
+      // Compaction settings — overrides pi-coding-agent SDK defaults.
+      // Sized for ~32k ctx (auto-fit). Single slot + iq4_nl KV + context-shift keep.
+      //
+      // Trigger formula: estTokens >= contextWindow - reserveTokensFloor - softThresholdTokens
+      //   = 31744 - 800 - 4000 = 26944 tokens (~85% full)
+      //
+      // reserveTokensFloor=800 tunes BOTH the preflight compaction trigger AND the
+      // memory-flush trigger. Lower = trigger fires later (more context before flushing).
+      // The 4800-token free buffer (800 floor + 4000 soft) covers max_tokens=3072 reply
+      // plus headroom.
+      //
+      // keepRecentTokens=12000 protects the most recent 12k of history during compaction
+      // so the agent doesn't immediately re-fill back over the threshold.
+      "compaction": {
+        "keepRecentTokens": 12000,
+        "reserveTokens": 8000,
+        "reserveTokensFloor": 800
+      }
+    }
+  },
+
+  "cron": {
+    "enabled": true
+  },
+
+  "commands": {
+    "ownerAllowFrom": ["telegram:8561762099"]
+  }
+}

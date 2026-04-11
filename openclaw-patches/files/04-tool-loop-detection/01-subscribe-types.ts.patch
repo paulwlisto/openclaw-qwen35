@@ -1,0 +1,23 @@
+diff --git src/agents/pi-embedded-subscribe.types.ts src/agents/pi-embedded-subscribe.types.ts
+index 3d63d23..a82fda2 100644
+--- src/agents/pi-embedded-subscribe.types.ts
++++ src/agents/pi-embedded-subscribe.types.ts
+@@ -29,6 +29,18 @@ export type SubscribeEmbeddedPiSessionParams = {
+   onPartialReply?: (payload: { text?: string; mediaUrls?: string[] }) => void | Promise<void>;
+   onAssistantMessageStart?: () => void | Promise<void>;
+   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void | Promise<void>;
++  /**
++   * Called when the same tool is called repeatedly with identical arguments
++   * beyond a safety threshold (circuit breaker for model loops). Implementations
++   * should typically abort the active run to stop further tool emissions.
++   */
++  onToolLoopDetected?: (info: {
++    toolName: string;
++    toolCallId: string;
++    count: number;
++    threshold: number;
++    argKey: string;
++  }) => void;
+   enforceFinalTag?: boolean;
+   silentExpected?: boolean;
+   config?: OpenClawConfig;

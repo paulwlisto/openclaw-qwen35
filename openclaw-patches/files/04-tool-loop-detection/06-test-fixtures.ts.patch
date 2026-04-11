@@ -1,0 +1,26 @@
+diff --git src/agents/pi-embedded-subscribe.handlers.lifecycle.compaction-reconcile.test.ts src/agents/pi-embedded-subscribe.handlers.lifecycle.compaction-reconcile.test.ts
+index d04dcbf..a30dff9 100644
+--- src/agents/pi-embedded-subscribe.handlers.lifecycle.compaction-reconcile.test.ts
++++ src/agents/pi-embedded-subscribe.handlers.lifecycle.compaction-reconcile.test.ts
+@@ -31,6 +31,8 @@ function createLifecycleContext(params: {
+       assistantTexts: [],
+       toolMetas: [],
+       toolMetaById: new Map(),
++      toolCallCounts: new Map(),
++      toolLoopReportedKeys: new Set(),
+       toolSummaryById: new Set(),
+       deltaBuffer: "",
+       blockBuffer: "",
+diff --git src/agents/pi-embedded-subscribe.handlers.tools.media.test.ts src/agents/pi-embedded-subscribe.handlers.tools.media.test.ts
+index e3641a4..f7e2bce 100644
+--- src/agents/pi-embedded-subscribe.handlers.tools.media.test.ts
++++ src/agents/pi-embedded-subscribe.handlers.tools.media.test.ts
+@@ -19,6 +19,8 @@ function createMockContext(overrides?: {
+     },
+     state: {
+       toolMetaById: new Map(),
++      toolCallCounts: new Map(),
++      toolLoopReportedKeys: new Set(),
+       toolMetas: [],
+       toolSummaryById: new Set(),
+       pendingMessagingTexts: new Map(),

@@ -1,0 +1,32 @@
+diff --git src/agents/pi-embedded-runner/tool-split.ts src/agents/pi-embedded-runner/tool-split.ts
+index 26eb086..71ba70a 100644
+--- src/agents/pi-embedded-runner/tool-split.ts
++++ src/agents/pi-embedded-runner/tool-split.ts
+@@ -5,11 +5,25 @@ import { toToolDefinitions } from "../pi-tool-definition-adapter.js";
+ // and extended toolset remain consistent across providers.
+ type AnyAgentTool = AgentTool;
+ 
+-export function splitSdkTools(options: { tools: AnyAgentTool[]; sandboxEnabled: boolean }): {
++export function splitSdkTools(options: {
++  tools: AnyAgentTool[];
++  sandboxEnabled: boolean;
++  routeToolsAsBuiltIn?: boolean;
++}): {
+   builtInTools: AnyAgentTool[];
+   customTools: ReturnType<typeof toToolDefinitions>;
+ } {
+-  const { tools } = options;
++  const { tools, routeToolsAsBuiltIn } = options;
++  // When routeToolsAsBuiltIn is true (e.g. for local Ollama models), pass tools
++  // through BOTH paths: builtInTools (so they reach the API request) AND customTools
++  // (so they're registered in the SDK's tool registry and become active).
++  if (routeToolsAsBuiltIn) {
++    console.error(`[splitSdkTools] routeToolsAsBuiltIn=true, routing ${tools.length} tools as builtInTools + customTools`);
++    return {
++      builtInTools: tools,
++      customTools: toToolDefinitions(tools),
++    };
++  }
+   return {
+     builtInTools: [],
+     customTools: toToolDefinitions(tools),
