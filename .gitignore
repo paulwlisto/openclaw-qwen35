@@ -6,5 +6,4 @@
 
 # Runtime data — large, machine-local, not source
 /data/workspace/*
-/data/models/*
 data/config/credentials/
